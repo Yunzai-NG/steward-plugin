@@ -87,6 +87,8 @@ export interface KernelUpdateResult {
    * 重启纯属白停一次机。拿不准（版本读不到）时取 false，宁可不重启也不惊扰一次。
    */
   readonly changed: boolean
+  /** 版本变化，如 `0.6.1 → 0.6.2`；仅 `changed` 为真时有，供重启回执引用 */
+  readonly versionChange?: string
   /** 讲给使用者的那句话 */
   readonly message: string
 }
@@ -205,7 +207,8 @@ export async function updateKernel(opts: KernelUpdateOptions): Promise<KernelUpd
     // 两次都读到、且不同才算变了；有一次读不到就当「拿不准」，取 false 宁可不重启
     const changed = before !== undefined && after !== undefined && before !== after
     if (changed) {
-      return { ok: true, changed: true, message: `内核已升级：${before} → ${after}` }
+      const versionChange = `${before} → ${after}`
+      return { ok: true, changed: true, versionChange, message: `内核已升级：${versionChange}` }
     }
     // 版本没变（已是最新），或读不到版本无从判断，都不值得重启
     return {

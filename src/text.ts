@@ -41,6 +41,8 @@ export interface BatchItem {
   readonly outcome?: PluginUpdateOutcome
   /** 失败时的原因 */
   readonly error?: string
+  /** 不在插件索引里、本就更新不了而被跳过（只在「更新全部」时出现） */
+  readonly skipped?: boolean
 }
 
 /**
@@ -57,10 +59,15 @@ export function describeBatch(items: readonly BatchItem[]): string {
   const updated: string[] = []
   const latest: string[] = []
   const failed: string[] = []
+  const skipped: string[] = []
 
   for (const item of items) {
     if (item.error !== undefined) {
       failed.push(`${item.name}：${item.error}`)
+      continue
+    }
+    if (item.skipped === true) {
+      skipped.push(item.name)
       continue
     }
     if (item.outcome === undefined) continue
@@ -73,6 +80,8 @@ export function describeBatch(items: readonly BatchItem[]): string {
   for (const one of updated) lines.push(`· ${one}`)
   // 已最新的只报名字挤一行，逐条列会把真正有变化的淹掉
   if (latest.length > 0) lines.push(`已是最新：${latest.join("、")}`)
+  // 手装、不在索引里的本就更新不了，单列一行而不算失败
+  if (skipped.length > 0) lines.push(`不在索引里，已跳过：${skipped.join("、")}`)
   for (const one of failed) lines.push(`× ${one}`)
   return lines.join("\n")
 }

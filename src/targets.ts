@@ -1,16 +1,20 @@
-﻿/**
- * 模块职责：决定「更新全部插件」到底更新哪几个
- * 依赖方向：只依赖类型
+/**
+ * 模块职责：决定「更新插件」到底更新哪几个，并把每个目标的两种名字配对
+ * 依赖方向：依赖 node:path 与类型
  * 生命周期：纯函数
- * 注意事项：排除自己 —— 更新本插件会重写其目录，随后的重载在命令还在栈上时把它卸掉，回话就此
- *          消失；更新自己走单独命令。排除 `builtin`（内核安装目录里、非 git 仓库，更新等于让市场
- *          clone 盖上去）。加载失败的插件照常更新 —— 那恰是最该更新的一类，按目录更新与它能否跑无关。
+ * 注意事项：市场按**安装目录名**寻址、宿主按 `definePlugin` 的**声明名**寻址，两者常不同
+ *          （`mhy-game` 装在 `mhy-game-plugin/`）。更新交目录名、重载交声明名，混用则报「市场里
+ *          没有名为 X 的插件」或重载错对象。点名时两种写法都认。排除自己（重载会在命令还在栈上时
+ *          卸掉本插件）与 `builtin`；加载失败的照常更新 —— 那恰是最该更新的一类。
  */
+import { basename } from "node:path"
 import type { PluginState } from "@yunzai-ng/types"
 
 /** 一个待更新的目标 */
 export interface Target {
-  /** 插件名（同时也是安装目录名，市场按它寻址） */
+  /** 安装目录名，交给 `maint.updatePlugin` */
+  readonly dir: string
+  /** 声明名，交给 `maint.reloadPlugin`；点名了一个没装的名字时与 `dir` 相同 */
   readonly name: string
 }
 
@@ -18,30 +22,55 @@ export interface Target {
 export interface PickOptions {
   /** 当前装着的插件 */
   readonly installed: readonly PluginState[]
-  /** 本插件自己的名字，一律排除 */
+  /** 本插件自己的声明名 */
   readonly self: string
-  /** 使用者点名要更新的那几个；为空表示「全部」 */
+  /** 本插件自己的安装目录名 */
+  readonly selfDir: string
+  /** 使用者点名要更新的那几个（声明名或目录名皆可）；为空表示「全部」 */
   readonly only?: readonly string[]
+}
+
+/**
+ * 取插件的安装目录名
+ * @param state 插件状态
+ * @returns 目录名；宿主没记下目录时 undefined
+ */
+export function dirOf(state: PluginState): string | undefined {
+  return state.root === "" ? undefined : basename(state.root)
 }
 
 /**
  * 挑出要更新的插件
  *
- * 点名时不做存在性过滤：写错名字应得到内核那句「没有名为 X 的插件」，而非被静默跳过。
+ * 点名时不做存在性过滤：认不出的名字原样交给内核，让使用者得到「没有名为 X 的插件」而非静默跳过。
  * @param opts 已知条件
  * @returns 目标清单，顺序即执行顺序
  */
 export function pickTargets(opts: PickOptions): Target[] {
+  const isSelf = (name: string, dir: string | undefined): boolean => name === opts.self || dir === opts.selfDir
   const only = opts.only ?? []
 
-  // 点名里含自己时也排掉，见文件头
   if (only.length > 0) {
-    return only.filter(name => name !== opts.self).map(name => ({ name }))
+    const picked: Target[] = []
+    for (const wanted of only) {
+      const hit = opts.installed.find(one => one.name === wanted || dirOf(one) === wanted)
+      const dir = hit === undefined ? wanted : (dirOf(hit) ?? wanted)
+      const name = hit?.name ?? wanted
+      if (isSelf(name, dir)) continue
+      // 同一个插件被两种名字各写一次时只更新一遍
+      if (picked.some(one => one.dir === dir)) continue
+      picked.push({ dir, name })
+    }
+    return picked
   }
 
-  return opts.installed
-    .filter(one => one.name !== opts.self && !one.builtin)
-    .map(one => ({ name: one.name }))
+  const all: Target[] = []
+  for (const one of opts.installed) {
+    const dir = dirOf(one)
+    if (dir === undefined || one.builtin || isSelf(one.name, dir)) continue
+    all.push({ dir, name: one.name })
+  }
+  return all
 }
 
 /**

@@ -168,7 +168,12 @@ describe("updateKernel", () => {
       readVersion: versions("0.6.0", "0.6.1"),
       run
     })
-    expect(result).toEqual({ ok: true, changed: true, message: "内核已升级：0.6.0 → 0.6.1" })
+    expect(result).toEqual({
+      ok: true,
+      changed: true,
+      message: "内核已升级：0.6.0 → 0.6.1",
+      versionChange: "0.6.0 → 0.6.1"
+    })
   })
 
   it("**已是最新时 changed:false** —— 前后版本相同，别白重启一次", async () => {
