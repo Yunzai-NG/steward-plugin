@@ -33,7 +33,7 @@ const NOT_IN_INDEX = "插件市场中没有名为"
 
 export default definePlugin({
   name: SELF,
-  version: "0.2.1",
+  version: "0.2.2",
   description: "指令运维：重启、关机、更新插件与内核。全部限主人",
   configSchema: CONFIG_SCHEMA,
 
@@ -94,9 +94,11 @@ export default definePlugin({
         // 删不掉就不发，宁可漏一句也不在每次重连时刷屏
         return
       }
-      if (!isFresh(notice, Date.now())) return
+      // now 取一次，同时用于「够不够新鲜」与「耗时多少」：两者都以 notice.at 为起点
+      const now = Date.now()
+      if (!isFresh(notice, now)) return
       try {
-        await bot.sendMessage(notice.target, noticeText(notice))
+        await bot.sendMessage(notice.target, noticeText(notice, now))
       } catch (err) {
         ctx.logger.warn(`重启回执补发失败：${reasonOf(err)}`)
       }

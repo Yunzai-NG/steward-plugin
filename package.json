@@ -1,6 +1,6 @@
 {
   "name": "@yunzai-ng/steward-plugin",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "运维插件：以指令重启、关机、更新内核与更新各个插件",
   "type": "module",
   "private": true,

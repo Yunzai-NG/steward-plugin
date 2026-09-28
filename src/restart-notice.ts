@@ -54,14 +54,31 @@ export function isFresh(notice: RestartNotice, now: number): boolean {
 }
 
 /**
+ * 计算重启耗时；无法计算（负值 / 非有限）时返回空串
+ * @param ms 毫秒
+ * @returns 「耗时 X.XXs」或空串
+ */
+function tookText(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return ""
+  return `耗时 ${(ms / 1000).toFixed(2)}s`
+}
+
+/**
  * 一条回执要补发的话
+ *
+ * `now` 用于算「从下达重启指令到账号重新上线」的耗时 —— `notice.at` 记于命令处理时、`now` 取于
+ * 补发时（`bot/online`），两者都在同一台机器的墙钟上，故差值即这次重启对使用者可感的总时长
+ * （含停机、被守护拉起、启动、账号重连）。取不到合理耗时时略去那半句，不硬凑一个数。
  * @param notice 回执
+ * @param now 补发时刻（毫秒）
  * @returns 补发文本
  */
-export function noticeText(notice: RestartNotice): string {
+export function noticeText(notice: RestartNotice, now: number): string {
+  const took = tookText(now - notice.at)
+  const tail = took === "" ? "" : `，${took}`
   if (notice.kind === "kernel-update") {
     const ver = notice.versionChange === undefined ? "" : `（${notice.versionChange}）`
-    return `内核已更新${ver}并重启完成，现在跑的是新版本`
+    return `内核已更新${ver}并重启完成${tail}，现在跑的是新版本`
   }
-  return "重启完成，我回来了"
+  return `重启完成${tail}`
 }

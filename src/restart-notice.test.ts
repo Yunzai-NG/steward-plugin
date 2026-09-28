@@ -45,19 +45,25 @@ describe("isFresh", () => {
 })
 
 describe("noticeText", () => {
-  it("普通重启", () => {
-    expect(noticeText(notice({ kind: "restart" }))).toBe("重启完成，我回来了")
+  it("普通重启带上耗时", () => {
+    // at=1_000_000，now 往后 2560ms，即 2.56s
+    expect(noticeText(notice({ kind: "restart", at: 1_000_000 }), 1_002_560)).toBe("重启完成，耗时 2.56s")
   })
 
-  it("内核更新带上版本变化", () => {
-    const text = noticeText(notice({ kind: "kernel-update", versionChange: "0.6.1 → 0.6.2" }))
+  it("内核更新带上版本变化与耗时", () => {
+    const text = noticeText(notice({ kind: "kernel-update", versionChange: "0.6.1 → 0.6.2", at: 0 }), 3000)
     expect(text).toContain("内核已更新")
     expect(text).toContain("0.6.1 → 0.6.2")
+    expect(text).toContain("耗时 3.00s")
   })
 
   it("内核更新缺版本变化时也讲得出话，不出现 undefined", () => {
-    const text = noticeText(notice({ kind: "kernel-update" }))
+    const text = noticeText(notice({ kind: "kernel-update" }), 1_000_000)
     expect(text).toContain("内核已更新")
     expect(text).not.toContain("undefined")
+  })
+
+  it("**取不到合理耗时时略去那半句**：时钟回拨（now < at）不硬凑一个负数", () => {
+    expect(noticeText(notice({ kind: "restart", at: 10_000 }), 5000)).toBe("重启完成")
   })
 })
