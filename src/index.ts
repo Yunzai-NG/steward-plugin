@@ -1,11 +1,11 @@
 /**
- * 模块职责：运维命令 —— 重启实例、更新插件、更新内核
+ * 模块职责：运维命令 —— 重启实例、关机、更新插件、更新内核
  * 依赖方向：依赖 `@yunzai-ng/core` 的 `definePlugin` 与本目录 config / text / targets / kernel / restart-notice
  * 生命周期：`setup` 时注册命令，随插件卸载由内核一并清理
- * 注意事项：先 `await e.reply(...)` 再做会卸掉插件的事（重启、重载），反了则回话丢失。批量更新先全部
+ * 注意事项：先 `await e.reply(...)` 再做会卸掉插件的事（重启、关机、重载），反了则回话丢失。批量更新先全部
  *          拉完、回完汇总再逐个重载 —— 重载适配器会让当前账号掉线，汇总就发不出去了。`canRestart`
  *          在 `yzng start` 起的实例上恒真（不论有无守护），故探测不到守护时先问一句「确认」：裸起的
- *          实例停机后没人拉起。市场认目录名、宿主认声明名，见 targets.ts。
+ *          实例停机后没人拉起。关机则**一律先问**，且不留重启回执。市场认目录名、宿主认声明名，见 targets.ts。
  */
 import { definePlugin, parseDuration } from "@yunzai-ng/core"
 import type { MessageEvent } from "@yunzai-ng/types"
@@ -33,8 +33,8 @@ const NOT_IN_INDEX = "插件市场中没有名为"
 
 export default definePlugin({
   name: SELF,
-  version: "0.1.0",
-  description: "指令运维：重启实例、更新插件与内核。全部限主人",
+  version: "0.2.0",
+  description: "指令运维：重启、关机、更新插件与内核。全部限主人",
   configSchema: CONFIG_SCHEMA,
 
   setup(ctx) {
@@ -116,6 +116,22 @@ export default definePlugin({
     }
 
     /**
+     * 要一句「确认」，回别的即取消
+     * @param e 触发命令的消息事件
+     * @param tip 问什么
+     * @returns 是否继续
+     */
+    const askConfirm = async (e: MessageEvent, tip: string): Promise<boolean> => {
+      const answer = await e.prompt({
+        tip: `${tip}\n回复「确认」继续，${CONFIRM_TIMEOUT} 内不回或回别的即取消`,
+        timeout: CONFIRM_TIMEOUT
+      })
+      if (answer?.text.trim() === "确认") return true
+      await e.reply("已取消")
+      return false
+    }
+
+    /**
      * 探测不到守护时先要一句「确认」
      *
      * 探测不到不等于没有守护（Windows 服务不留痕迹），故不拦，只问 —— 裸起的实例停机后没人拉起。
@@ -125,16 +141,11 @@ export default definePlugin({
      */
     const confirmUnsupervised = async (e: MessageEvent, what: string): Promise<boolean> => {
       if (maint.supervisor !== undefined) return true
-      const answer = await e.prompt({
-        tip:
-          `未检测到 pm2 / systemd。${what}会停机，若是裸 yzng start 起的实例，停机后不会自动拉起，` +
-          `得你手动再启动（装了 Windows 服务一类守护的可忽略）。\n` +
-          `回复「确认」继续，${CONFIRM_TIMEOUT} 内不回或回别的即取消`,
-        timeout: CONFIRM_TIMEOUT
-      })
-      if (answer?.text.trim() === "确认") return true
-      await e.reply("已取消")
-      return false
+      return askConfirm(
+        e,
+        `未检测到 pm2 / systemd。${what}会停机，若是裸 yzng start 起的实例，停机后不会自动拉起，` +
+          `得你手动再启动（装了 Windows 服务一类守护的可忽略）。`
+      )
     }
 
     /**
@@ -177,6 +188,46 @@ export default definePlugin({
         await e.reply(`正在重启${via}，稍等十几秒`)
         await saveRestartNotice(e, "restart")
         await maint.requestRestart({ reason: `主人 ${e.sender.uid} 通过指令重启` })
+      })
+
+    /* ────────────────────────────── 关机 ────────────────────────────── */
+
+    ctx
+      .command("#关机", { master: true })
+      .alias("#停机", "#关闭实例")
+      .desc("优雅停机且不再起来；之后只能在那台机器上手动启动")
+      .action(async (e: MessageEvent) => {
+        if (!conf().allowShutdown) {
+          await e.reply("本插件的「允许指令关机」已关闭，可在面板的配置页打开")
+          return
+        }
+        if (!maint.canShutdown) {
+          await e.reply("这台实例的宿主没有接管关机，指令关机不可用，请按你的部署方式停机")
+          return
+        }
+
+        /*
+         * 关机一律先问，且措辞随守护而变
+         *
+         * 关掉之后没有任何聊天指令能把它启动回来，风险与重启不是一个量级。自带守护天然认得退出码
+         * 0；外部守护则要反过来提醒：退出码 0 得靠 pm2 的 stop_exit_codes 一类配置才被认作「别重启」，
+         * 没配就是关了又被拉起。
+         */
+        const caveat =
+          maint.supervisor === "yzng"
+            ? "由 yzng 自带守护托管：关机以退出码 0 退出，守护天然认作『别再拉起』，无需额外配置。"
+            : maint.supervisor === "pm2"
+              ? "检测到 pm2：需在其配置里写 stop_exit_codes: [0]，否则关掉会被立刻拉起来。"
+              : maint.supervisor === "systemd"
+                ? "检测到 systemd：Restart=on-failure 的单元不会拉起，Restart=always 的还需 RestartPreventExitStatus=0。"
+                : "未检测到守护，关掉后应当不会有人拉起它。"
+        if (!(await askConfirm(e, `关机之后**没有任何指令能把它启动回来**，只能在那台机器上手动启动。\n${caveat}`))) {
+          return
+        }
+
+        // 不留重启回执：它是给「还会回来」的场景用的，关机后那条记录只会在下次手动启动时冒出来
+        await e.reply("正在关机，再见")
+        await maint.requestShutdown({ reason: `主人 ${e.sender.uid} 通过指令关机` })
       })
 
     /* ────────────────────────────── 更新插件 ────────────────────────────── */
@@ -319,12 +370,13 @@ export default definePlugin({
           `内核 ${ctx.app.version}`,
           `插件 ${installed.length} 个，其中 ${updatable.length} 个可经本插件更新`,
           `重启：${describeRestart(maint.canRestart, settings.allowRestart, maint.supervisor)}`,
+          `关机：${describeShutdown(maint.canShutdown, settings.allowShutdown)}`,
           `撞上本地改动时：${settings.onDirty}`
         ]
         await e.reply(lines.join("\n"))
       })
 
-    ctx.logger.info("运维命令已就绪：#重启、#更新插件、#更新自己、#更新内核、#运维状态")
+    ctx.logger.info("运维命令已就绪：#重启、#关机、#更新插件、#更新自己、#更新内核、#运维状态")
   }
 })
 
@@ -353,4 +405,16 @@ function describeRestart(canRestart: boolean, allowed: boolean, supervisor: stri
   return supervisor === undefined
     ? "可执行，但未检测到守护 —— 裸 yzng start 起的实例停机后不会自动拉起"
     : `可用（由 ${supervisor} 拉起）`
+}
+
+/**
+ * 讲清关机这件事此刻的可用性
+ * @param canShutdown 宿主是否接管了关机
+ * @param allowed 使用者是否允许
+ * @returns 一句说明
+ */
+function describeShutdown(canShutdown: boolean, allowed: boolean): string {
+  if (!allowed) return "已在本插件配置里关闭"
+  if (!canShutdown) return "不可用（宿主没有接管关机）"
+  return "可用，执行前会问一句确认"
 }
