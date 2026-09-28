@@ -256,6 +256,34 @@ describe("updateKernel", () => {
     expect(result.message).toContain("0.6.1")
   })
 
+  it("**磁盘早已是新版、只是没重启过** —— 以在跑的版本为准，changed:true", async () => {
+    const { run } = recorder()
+    const result = await updateKernel({
+      home: "/h",
+      spec: "latest",
+      timeoutMs: 1,
+      hasCli: cliPresent,
+      readVersion: unchanged("0.6.2"),
+      running: "0.6.1",
+      run
+    })
+    expect(result).toMatchObject({ ok: true, changed: true, versionChange: "0.6.1 → 0.6.2" })
+  })
+
+  it("在跑的与磁盘一致时 changed:false", async () => {
+    const { run } = recorder()
+    const result = await updateKernel({
+      home: "/h",
+      spec: "latest",
+      timeoutMs: 1,
+      hasCli: cliPresent,
+      readVersion: unchanged("0.6.2"),
+      running: "0.6.2",
+      run
+    })
+    expect(result).toMatchObject({ ok: true, changed: false })
+  })
+
   it("**读不到版本时 changed:false** —— 拿不准就不重启，宁可少停一次机", async () => {
     const { run } = recorder()
     const result = await updateKernel({

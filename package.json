@@ -1,6 +1,6 @@
 {
   "name": "@yunzai-ng/steward-plugin",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "运维插件：以指令重启、关机、更新内核与更新各个插件",
   "type": "module",
   "private": true,
@@ -42,8 +42,8 @@
     "verify": "pnpm run build && pnpm run typecheck:test && pnpm run lint && pnpm run test"
   },
   "peerDependencies": {
-    "@yunzai-ng/core": ">=0.6.2",
-    "@yunzai-ng/types": ">=0.4.2"
+    "@yunzai-ng/core": ">=0.6.3",
+    "@yunzai-ng/types": ">=0.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.18.0",

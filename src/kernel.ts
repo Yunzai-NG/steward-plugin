@@ -198,6 +198,8 @@ export interface KernelUpdateOptions {
   readonly hasCli?: (home: string) => boolean
   /** 读 core 当前版本；缺省真去读磁盘，测试时替换 */
   readonly readVersion?: (home: string) => string | undefined
+  /** 此刻在跑的 core 版本（`ctx.app.version`）；给了就以它为「升级前」，不读磁盘 */
+  readonly running?: string
   /** 执行实现；缺省真去跑，测试时替换 */
   readonly run?: KernelUpdateRunner
 }
@@ -236,9 +238,10 @@ export async function updateKernel(opts: KernelUpdateOptions): Promise<KernelUpd
 
   const readVersion = opts.readVersion ?? readCoreVersion
   const run = opts.run ?? realRunner
-  // 升级前后各读一次 core 版本，据此判「到底变没变」——「已是最新」时 update 照样成功返回，
-  // 光看 ok 会白重启一次
-  const before = readVersion(opts.home)
+  // 升级后读到的版本与「升级前」比，据此判要不要重启 ——「已是最新」时 update 照样成功返回，
+  // 光看 ok 会白重启一次。「升级前」优先取在跑的版本：磁盘上可能早已是新版、只是没重启过，
+  // 拿两次磁盘读数比会把它判成「未变」
+  const before = opts.running ?? readVersion(opts.home)
   try {
     await run(process.execPath, [bin, "update", "--to", opts.spec], opts.home, opts.timeoutMs)
     const after = readVersion(opts.home)

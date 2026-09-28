@@ -6,15 +6,18 @@
  *          拉完、回完汇总再逐个重载 —— 重载适配器会让当前账号掉线，汇总就发不出去了。`canRestart`
  *          在 `yzng start` 起的实例上恒真（不论有无守护），故探测不到守护时先问一句「确认」：裸起的
  *          实例停机后没人拉起。关机则**一律先问**，且不留重启回执。市场认目录名、宿主认声明名，见 targets.ts。
+ *
+ *          **装依赖或编译失败的插件不重载**（`reloadBlockedBy`）：那时 `dist/` 还是旧的，换上去只会
+ *          把一个跑不起来的插件顶替正在正常工作的那份。
  */
-import { definePlugin, parseDuration } from "@yunzai-ng/core"
-import type { MessageEvent } from "@yunzai-ng/types"
+import { definePlugin, parseDuration, seg } from "@yunzai-ng/core"
+import type { ForwardNode, MessageEvent, PluginCommit } from "@yunzai-ng/types"
 import { CONFIG_SCHEMA } from "./config.js"
 import type { StewardConfigRO } from "./config.js"
 import { updateKernel } from "./kernel.js"
 import { dirOf, parseNames, pickTargets } from "./targets.js"
 import type { Target } from "./targets.js"
-import { describeBatch, describeOutcome, reasonOf } from "./text.js"
+import { commitLine, describeBatch, describeOutcome, reasonOf, reloadBlockedBy } from "./text.js"
 import type { BatchItem } from "./text.js"
 import { NOTICE_KEY, isFresh, noticeText } from "./restart-notice.js"
 import type { RestartKind, RestartNotice } from "./restart-notice.js"
@@ -31,9 +34,12 @@ const CONFIRM_TIMEOUT = "30s"
 /** 内核市场对「索引里没有这个插件」的报错开头（market.ts 的 install 与 #tryPull 两处同一句） */
 const NOT_IN_INDEX = "插件市场中没有名为"
 
+/** 平台发不了合并转发时，退回纯文本最多贴几条提交 */
+const INLINE_COMMIT_LIMIT = 5
+
 export default definePlugin({
   name: SELF,
-  version: "0.2.2",
+  version: "0.2.3",
   description: "指令运维：重启、关机、更新插件与内核。全部限主人",
   configSchema: CONFIG_SCHEMA,
 
@@ -151,6 +157,38 @@ export default definePlugin({
     }
 
     /**
+     * 把一个插件这次拉来的提交发成一个合并转发
+     *
+     * 折成卡片而不是直接贴：一次更新几十条提交会把整屏刷满。平台不支持合并转发（`caps` 里没有
+     * `forward`）时退回逐条贴，但只贴前几条 —— 折不成卡片总比一条都不发好，刷屏又是另一种坏。
+     * 发失败只记日志：更新本身已经成功了，日志发不出去不该让使用者以为更新失败。
+     * @param e 触发命令的消息事件
+     * @param name 插件名
+     * @param commits 这次拉来的提交，新的在前
+     */
+    const sendCommits = async (e: MessageEvent, name: string, commits: readonly PluginCommit[]): Promise<void> => {
+      if (commits.length === 0) return
+      const title = `${name} 更新日志（${commits.length} 条提交）`
+      try {
+        const send = e.bot.sendForward
+        if (send !== undefined && e.bot.caps.has("forward")) {
+          const node = (text: string): ForwardNode => ({
+            uid: e.bot.selfId,
+            name: e.bot.nickname,
+            message: [seg.text(text)]
+          })
+          await send.call(e.bot, e.target, [node(title), ...commits.map(one => node(commitLine(one)))])
+          return
+        }
+        const shown = commits.slice(0, INLINE_COMMIT_LIMIT)
+        const more = commits.length > shown.length ? `\n……另有 ${commits.length - shown.length} 条` : ""
+        await e.reply(`${title}\n${shown.map(commitLine).join("\n")}${more}`)
+      } catch (err) {
+        ctx.logger.warn(`${name} 的更新日志发送失败：${reasonOf(err)}`)
+      }
+    }
+
+    /**
      * 更新一个插件（只更新，不重载 —— 重载放在回完话之后，见文件头）
      * @param target 目标
      * @param skipUnknown 是否把「不在索引里」归为跳过而非失败；只在「更新全部」时开
@@ -256,30 +294,55 @@ export default definePlugin({
           return
         }
 
-        if (targets.length > 1) await e.reply(`开始更新 ${targets.length} 个插件，逐个来，请稍候`)
+        // 收到就回一句：拉取加装依赖加编译可能要几十秒，这期间没有任何反馈的话使用者会以为命令没触发
+        await e.reply(
+          targets.length === 1
+            ? `正在更新 ${targets[0]?.name}，要拉取代码并编译，请稍候`
+            : `开始更新 ${targets.length} 个插件（${targets.map(one => one.name).join("、")}），逐个来，请稍候`
+        )
 
         const items: BatchItem[] = []
         for (const [i, target] of targets.entries()) {
           if (i > 0) await new Promise(resolve => setTimeout(resolve, BATCH_GAP_MS))
-          items.push(await updateOne(target, names.length === 0))
+          const item = await updateOne(target, names.length === 0)
+          items.push(item)
+          // 一个插件的更新日志紧跟在它自己更新完之后发，而不是攒到最后 —— 批量时攒在一起认不出谁是谁
+          if (item.outcome?.commits !== undefined) await sendCommits(e, target.name, item.outcome.commits)
         }
 
-        // 没有新提交的不重载：重载会重建那个插件的状态，白付代价还可能打断它
-        const toReload = conf().reload
-          ? targets.filter((_, i) => {
+        /*
+         * 挑出该重载的
+         *
+         * 三种不重载：没有新提交（白付代价还可能打断它）、装依赖或编译失败（产物还是旧的，
+         * 换上去只会把一个跑不起来的插件顶替正在正常工作的那份）、使用者关掉了自动重载。
+         */
+        const reloadable = conf().reload
+          ? targets.flatMap((target, i) => {
               const outcome = items[i]?.outcome
-              return outcome !== undefined && outcome.changed !== false
+              if (outcome === undefined || outcome.changed === false) return []
+              return [{ target, blocked: reloadBlockedBy(outcome) }]
             })
           : []
-        const tail =
-          toReload.length === 0
-            ? ""
-            : `\n接下来重载 ${toReload.map(one => one.name).join("、")} 使新代码生效；失败会记在日志里，可在面板插件页手动重载`
-        await e.reply((targets.length === 1 ? singleLine(items[0]) : describeBatch(items)) + tail)
+        const toReload = reloadable.filter(one => one.blocked === undefined).map(one => one.target)
+        const skipped = reloadable.filter(one => one.blocked !== undefined)
 
+        const tail: string[] = []
+        if (toReload.length > 0) {
+          tail.push(`接下来重载 ${toReload.map(one => one.name).join("、")} 使新代码生效`)
+        }
+        for (const one of skipped) tail.push(`${one.target.name} 不重载：${one.blocked}`)
+        const summary = targets.length === 1 ? singleLine(items[0]) : describeBatch(items)
+        await e.reply(tail.length === 0 ? summary : `${summary}\n${tail.join("\n")}`)
+
+        const failed: string[] = []
         for (const target of toReload) {
-          const ok = await maint.reloadPlugin(target.name)
-          if (!ok) ctx.logger.warn(`${target.name} 已更新但重载失败，可在面板的插件页手动重载，或重启实例`)
+          if (!(await maint.reloadPlugin(target.name))) failed.push(target.name)
+        }
+        if (failed.length > 0) {
+          // 重载失败要讲出来：重载是这条命令的最后一步，默默失败会让人以为新代码已经在跑了
+          await e.reply(`${failed.join("、")} 已更新但重载失败，可在面板的插件页手动重载，或执行 #重启`)
+        } else if (toReload.length > 0) {
+          await e.reply(`${toReload.map(one => one.name).join("、")} 已重载，新代码已生效`)
         }
       })
 
@@ -288,6 +351,7 @@ export default definePlugin({
       .desc("更新本插件；更新后需重载或重启才生效")
       .action(async (e: MessageEvent) => {
         const settings = conf()
+        await e.reply("正在更新本插件，要拉取代码并编译，请稍候")
         try {
           const outcome = await maint.updatePlugin(selfDir(), {
             dependencies: settings.dependencies,
@@ -297,8 +361,14 @@ export default definePlugin({
             await e.reply(describeOutcome(outcome))
             return
           }
+          if (outcome.commits !== undefined) await sendCommits(e, SELF, outcome.commits)
           // 不自动重载自己：会在这条命令还在栈上时把本插件卸掉
-          await e.reply(`${describeOutcome(outcome)}\n新代码尚未生效：请在面板的插件页重载本插件，或执行 #重启`)
+          const blocked = reloadBlockedBy(outcome)
+          await e.reply(
+            blocked === undefined
+              ? `${describeOutcome(outcome)}\n新代码尚未生效：请在面板的插件页重载本插件，或执行 #重启`
+              : `${describeOutcome(outcome)}\n${blocked}\n先到 ${selfDir()} 目录收拾好再重载，否则换上去的是一份跑不起来的代码`
+          )
         } catch (err) {
           await e.reply(`更新失败：${reasonOf(err)}`)
         }
@@ -329,7 +399,8 @@ export default definePlugin({
         const result = await updateKernel({
           home: ctx.app.paths.home,
           spec: target,
-          timeoutMs: parseDuration(settings.kernelTimeout, 900_000)
+          timeoutMs: parseDuration(settings.kernelTimeout, 900_000),
+          running: ctx.app.version
         })
 
         if (!result.ok) {

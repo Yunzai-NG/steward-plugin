@@ -8,7 +8,7 @@
  *          断言写成互斥的两条，而不是各测一句包含关系。
  */
 import { describe, expect, it } from "vitest"
-import { describeBatch, describeOutcome, reasonOf, type BatchItem } from "./text.js"
+import { commitLine, describeBatch, describeOutcome, reasonOf, reloadBlockedBy, type BatchItem } from "./text.js"
 import type { PluginUpdateOutcome } from "@yunzai-ng/types"
 
 /**
@@ -104,6 +104,46 @@ describe("describeBatch", () => {
   it("失败的带上原因，且与成功的用不同前缀区分", () => {
     const text = describeBatch([{ name: "a", error: "目录里有改动" }])
     expect(text).toContain("× a：目录里有改动")
+  })
+})
+
+describe("commitLine", () => {
+  it("写成「[月-日 时:分] 提交信息」", () => {
+    // 时间按本机时区格式化，故此处由同一个 Date 现算期望值，不写死小时 —— CI 是 UTC
+    const time = new Date(2026, 8, 29, 1, 20).getTime()
+    expect(commitLine({ hash: "abc1234", time, subject: "feat: 加一条命令" })).toBe("[09-29 01:20] feat: 加一条命令")
+  })
+
+  it("月、日、时、分都补零", () => {
+    const time = new Date(2026, 0, 2, 3, 4).getTime()
+    expect(commitLine({ hash: "abc1234", time, subject: "x" })).toBe("[01-02 03:04] x")
+  })
+
+  it("提交说明为空时退回提交号，不留一行只有时间的空话", () => {
+    const time = new Date(2026, 8, 29, 1, 20).getTime()
+    expect(commitLine({ hash: "abc1234", time, subject: "" })).toContain("abc1234")
+  })
+})
+
+describe("reloadBlockedBy", () => {
+  it("一切正常时不拦", () => {
+    expect(reloadBlockedBy(outcome({ fromVersion: "0.9.0" }))).toBeUndefined()
+  })
+
+  it("**装依赖失败就别重载** —— 新代码 import 不到新依赖", () => {
+    const blocked = reloadBlockedBy(outcome({ dependencyError: "registry 连不上" }))
+    expect(blocked).toContain("装依赖失败")
+    expect(blocked).toContain("registry 连不上")
+  })
+
+  it("**编译失败就别重载** —— dist 还是旧的，换上去等于拿跑不起来的顶替能跑的", () => {
+    const blocked = reloadBlockedBy(outcome({ setupError: "build：tsc 报错" }))
+    expect(blocked).toContain("编译失败")
+    expect(blocked).toContain("tsc 报错")
+  })
+
+  it("两样都有时先报装依赖 —— 依赖没装好，编译失败只是它的后果", () => {
+    expect(reloadBlockedBy(outcome({ dependencyError: "装不上", setupError: "build：连带失败" }))).toContain("装依赖失败")
   })
 })
 

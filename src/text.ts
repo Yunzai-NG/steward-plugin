@@ -6,7 +6,7 @@
  *          pop 取回」，他照做得到「没有 stash 可弹出」，会以为改动还在。「已是最新」单独成句，
  *          不写成「0.1.0 → 0.1.0」那种像更新过一次的样子。
  */
-import type { PluginUpdateOutcome } from "@yunzai-ng/types"
+import type { PluginCommit, PluginUpdateOutcome } from "@yunzai-ng/types"
 
 /**
  * 一个插件的更新结果讲成一行
@@ -84,6 +84,35 @@ export function describeBatch(items: readonly BatchItem[]): string {
   if (skipped.length > 0) lines.push(`不在索引里，已跳过：${skipped.join("、")}`)
   for (const one of failed) lines.push(`× ${one}`)
   return lines.join("\n")
+}
+
+/**
+ * 一条提交讲成「[09-29 01:20] 提交信息」
+ *
+ * 时间按本机时区格式化，不带年份 —— 更新日志看的是「这几天改了什么」，年份只占地方。
+ * @param commit 一条提交
+ * @returns 一行文本
+ */
+export function commitLine(commit: PluginCommit): string {
+  const d = new Date(commit.time)
+  const two = (n: number): string => String(n).padStart(2, "0")
+  const when = `${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`
+  const subject = commit.subject === "" ? commit.hash : commit.subject
+  return `[${when}] ${subject}`
+}
+
+/**
+ * 编译或装依赖失败时，挡住重载的那句话
+ *
+ * **失败了就不该重载。** 装依赖失败则新代码 import 不到新依赖，编译失败则 `dist/` 还是旧的 ——
+ * 两种情形重载都只会把一个跑不起来的插件换上去，而原来那份还在正常工作。
+ * @param outcome 更新结果
+ * @returns 拦截原因；一切正常时 undefined
+ */
+export function reloadBlockedBy(outcome: PluginUpdateOutcome): string | undefined {
+  if (outcome.dependencyError !== undefined) return `装依赖失败：${outcome.dependencyError}`
+  if (outcome.setupError !== undefined) return `编译失败：${outcome.setupError}`
+  return undefined
 }
 
 /**
