@@ -36,26 +36,64 @@ const SPEC_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
 /** CLI 入口相对安装目录的路径 */
 const CLI_BIN_REL = join("node_modules", "@yunzai-ng", "cli", "dist", "bin.js")
 
+/** CLI 的 package.json 相对安装目录的路径 */
+const CLI_PKG_REL = join("node_modules", "@yunzai-ng", "cli", "package.json")
+
 /** core 的 package.json 相对安装目录的路径 */
 const CORE_PKG_REL = join("node_modules", "@yunzai-ng", "core", "package.json")
 
 /**
- * 读安装目录里 core 此刻的版本
- *
- * 判「内核到底变没变」的硬事实：pnpm 布局下这条路径是 junction，升级后指向新版本目录，读到的
- * 就是新版本号。比匹配 `yzng update` 打印的中文（措辞一改就失效）可靠。读不到时 undefined ——
- * 由调用方按「拿不准变没变」处理，而不是编一个版本号。
- * @param home 安装目录（`ctx.app.paths.home`）
+ * 读某个 package.json 的 `version`
+ * @param file package.json 的绝对路径
  * @returns 版本号；读不到或不是合法 JSON 时 undefined
  */
-export function readCoreVersion(home: string): string | undefined {
+function readPkgVersion(file: string): string | undefined {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(join(home, CORE_PKG_REL), "utf8"))
-    const version = (parsed as { version?: unknown }).version
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as { version?: unknown }
+    const version = parsed.version
     return typeof version === "string" && version !== "" ? version : undefined
   } catch {
     return undefined
   }
+}
+
+/**
+ * 读 CLI 声明的 `@yunzai-ng/core` 精确依赖
+ * @param home 安装目录
+ * @returns 版本号；读不到、非精确版本（如 `workspace:*`）时 undefined
+ */
+function readCliCoreDep(home: string): string | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(join(home, CLI_PKG_REL), "utf8")) as {
+      dependencies?: Record<string, unknown>
+    }
+    const dep = parsed.dependencies?.["@yunzai-ng/core"]
+    if (typeof dep !== "string") return undefined
+    // 发布时是精确版本；防御性地剥掉可能的范围前缀，非数字打头（`workspace:*` 等）则弃用
+    const v = dep.replace(/^[\^~>=<\s]+/, "").trim()
+    return /^\d/.test(v) ? v : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 读「重启后会加载的那一版 core」的版本
+ *
+ * **读 CLI 声明的 core 精确依赖，而不是 `<home>/node_modules/@yunzai-ng/core` 那个 junction。**
+ * 这是踩过的坑：那个 junction 由 `linkFramework` 在 `yzng start` 时建，`pnpm add cli@latest`
+ * 只更新 `.pnpm` 与 cli 的链接、**不动它** —— 升级后到下次启动前它一直指向旧 core。据它判会把
+ * 「已升级、就差重启」误判成「版本未变」，于是跳过那次本该做的重启，新内核永远起不来。
+ * CLI 对 core 是钉死版本号的精确依赖（见发布流水线），故它声明的正是重启后会加载的那一版，
+ * 且 pnpm 会可靠地更新 cli 的链接。
+ *
+ * 兜底：嵌入式 / 全局安装等 CLI 不在安装目录里时，退回读 `<home>` 下的 core。读不到时 undefined ——
+ * 由调用方按「拿不准变没变」处理，而不是编一个版本号。
+ * @param home 安装目录（`ctx.app.paths.home`）
+ * @returns 版本号；读不到时 undefined
+ */
+export function readCoreVersion(home: string): string | undefined {
+  return readCliCoreDep(home) ?? readPkgVersion(join(home, CORE_PKG_REL))
 }
 
 /**

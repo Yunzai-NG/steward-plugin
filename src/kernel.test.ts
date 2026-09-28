@@ -13,7 +13,10 @@
  */
 import { describe, expect, it } from "vitest"
 import process from "node:process"
-import { cliBinPath, isValidSpec, updateKernel } from "./kernel.js"
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { cliBinPath, isValidSpec, readCoreVersion, updateKernel } from "./kernel.js"
 import type { KernelUpdateRunner } from "./kernel.js"
 
 /** 记下一次调用的实参 */
@@ -108,6 +111,66 @@ describe("cliBinPath", () => {
     expect(bin).toContain("node_modules")
     expect(bin).toContain("cli")
     expect(bin).toContain("bin.js")
+  })
+})
+
+describe("readCoreVersion", () => {
+  /**
+   * 造一个假安装目录
+   * @param cliCoreDep cli 声明的 core 依赖；undefined 表示不建 cli/package.json
+   * @param homeCore `<home>/node_modules/@yunzai-ng/core` 的版本；undefined 表示不建
+   * @returns 目录路径
+   */
+  function makeHome(cliCoreDep: string | undefined, homeCore: string | undefined): string {
+    const home = mkdtempSync(join(tmpdir(), "steward-kernel-"))
+    if (cliCoreDep !== undefined) {
+      const dir = join(home, "node_modules", "@yunzai-ng", "cli")
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ dependencies: { "@yunzai-ng/core": cliCoreDep } }))
+    }
+    if (homeCore !== undefined) {
+      const dir = join(home, "node_modules", "@yunzai-ng", "core")
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ version: homeCore }))
+    }
+    return home
+  }
+
+  it("**读 cli 声明的 core 依赖，压过 home 顶层那个可能过期的 core**", () => {
+    // 这正是踩过的坑：pnpm add cli@latest 后 home 的 core junction 还指向旧版，据它判会漏掉升级
+    const home = makeHome("0.6.2", "0.6.1")
+    try {
+      expect(readCoreVersion(home)).toBe("0.6.2")
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("没有 cli（嵌入式 / 全局装）时退回读 home 下的 core", () => {
+    const home = makeHome(undefined, "0.6.1")
+    try {
+      expect(readCoreVersion(home)).toBe("0.6.1")
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("cli 的 core 依赖不是精确版本（workspace:* 等）时也退回 home 下的 core", () => {
+    const home = makeHome("workspace:*", "0.6.1")
+    try {
+      expect(readCoreVersion(home)).toBe("0.6.1")
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("两处都读不到时 undefined", () => {
+    const home = makeHome(undefined, undefined)
+    try {
+      expect(readCoreVersion(home)).toBeUndefined()
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 })
 

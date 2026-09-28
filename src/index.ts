@@ -33,7 +33,7 @@ const NOT_IN_INDEX = "插件市场中没有名为"
 
 export default definePlugin({
   name: SELF,
-  version: "0.2.0",
+  version: "0.2.1",
   description: "指令运维：重启、关机、更新插件与内核。全部限主人",
   configSchema: CONFIG_SCHEMA,
 
