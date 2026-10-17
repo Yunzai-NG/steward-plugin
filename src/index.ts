@@ -38,9 +38,8 @@ const NOT_IN_INDEX = "插件市场中没有名为"
 const INLINE_COMMIT_LIMIT = 5
 
 export default definePlugin({
+  // 版本与说明取 package.json
   name: SELF,
-  version: "0.2.3",
-  description: "指令运维：重启、关机、更新插件与内核。全部限主人",
   configSchema: CONFIG_SCHEMA,
 
   setup(ctx) {
